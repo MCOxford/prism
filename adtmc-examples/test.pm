@@ -2,11 +2,11 @@
 dtmc
 
 // FORMULAE FOR ABSTRACT VARIABLES
-formula abs_a = (s=1||s=2?1:0) + (s=5||s=6?2:0) + (s=3||s=4?3:0);
+formula abs_a = (s=1|s=2?1:0) + (s=5|s=6?2:0) + (s=3|s=4?3:0);
 
 module concrete
 
-	s : [0..6] init 0
+	s : [0..6] init 0;
 
 	[] s=0 -> 1/3 : (s'=1) + 2/3 : (s'=3);
 	[] s=1 -> 1/2 : (s'=2) + 1/2 : (s'=3);
@@ -16,7 +16,7 @@ module concrete
 	[] s=5 -> 1 : (s'=6);
 	[] s=6 -> 1/2 : true + 1/2 : (s'=5);
 
-end module
+endmodule
 
 // desired result
 //
