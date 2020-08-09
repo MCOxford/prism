@@ -6,7 +6,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.LinkedList;
 import java.util.Vector;
+import java.util.Set;
+import java.util.HashSet;
 
+import explicit.Distribution;
 import explicit.IDTMCSimple;
 import explicit.IndexedSet;
 import explicit.StateStorage;
@@ -26,7 +29,7 @@ public class AbstractionTest
 	// ADTMC to be constructed
 	private IDTMCSimple<Double> model = new IDTMCSimple<>();
 	// A very small value close to zero
-	private double epsilon = 10e-14; 
+	private static double epsilon = 1e-14; 
 	
 	/**
 	 * Find Abstract variables names and formulae and add them to vectors absVarNames
@@ -109,10 +112,8 @@ public class AbstractionTest
 		case LTS:
 			throw new PrismNotSupportedException("Code not supported for " + modelType + "s");
 		}
-		// Attach evaluator and variable info
-        //((ModelExplicit<Value>) modelSimple).setEvaluator(modelGen.getEvaluator());
-        //((ModelExplicit<Value>) modelSimple).setVarList(varList);
-		
+		// Create evaluator for model
+		model.setEvaluator(Evaluator.createForDoubleIntervals());
 		// Initialise states storage
 		// TODO: Is there a way to do this without the IndexedSet?
 		states = new IndexedSet<State>(true);
@@ -121,7 +122,7 @@ public class AbstractionTest
 		// Add initial state to 'explore', 'states' and to the model
 		// (For now, it must be unique)
 		if (!modelGen.hasSingleInitialState()) {
-			//throw new Exception("Number of initial states in concrete model must not exceed one.");
+			// TODO: Throw exception if there is more than one initial state
 		}
 		State initState = modelGen.getInitialState();
 		explore.add(initState);
@@ -129,7 +130,6 @@ public class AbstractionTest
 		model.addState();
 		model.addInitialState(model.getNumStates() - 1);
 		// Explore...
-		absSrc = -1;
 		while (!explore.isEmpty()) {
 			// Pick next state to explore
 			// (they are stored in order found so know index is src+1)
@@ -162,31 +162,70 @@ public class AbstractionTest
 			}
 			// Now, find the abstract state we are currently exploring using state
 			State currentAbsState = findAbsState(state);
-			absSrc++;
-			System.out.println(currentAbsState);
-			// Has currentAbsState already been added to ADTMC?
-			if (!absStates.add(currentAbsState)) {
-				// Something here...
+			// Has currentAbsState present in the ADTMC?
+			//System.out.println("current: " + currentAbsState);
+			//System.out.println("distr: " + distr);
+			if (absStates.add(currentAbsState)) {
+				absSrc = absStates.getIndexOfLastAdd();
+				//System.out.println("absSrc: " + absSrc);
+				// If not and it is not the initial state, add it to the model
+				if (!model.isInitialState(absSrc)) {
+					model.addState();
+				}
+				//System.out.println("size: " + model.getNumStates());
+				// Get index of source (abstract) state
+				absSrc = absStates.getIndexOfLastAdd();
+				for(State nextAbsState : distr.keySet()) {
+					// if nextAbsState not in model, add it
+					if (absStates.add(nextAbsState)) {
+						model.addState();
+						//System.out.println("size: " + model.getNumStates());
+					}
+					// Get index of destination (abstract) state, add transition w/ interval
+					dest = absStates.getIndexOfLastAdd();
+					double prob = distr.get(nextAbsState);
+					model.addToProbability(absSrc, dest, new Interval<Double>(prob, prob));
+				}
 			}
 			else {
-				// Otherwise, add it to the model
-				model.addState();
+				absSrc = absStates.getIndexOfLastAdd();
+				//System.out.println("absSrc: " + absSrc);
+				//System.out.println(absStates.getEntrySet());
+				Set<Integer> scannedStates = new HashSet<Integer>();
 				for(State nextAbsState : distr.keySet()) {
 					if (absStates.add(nextAbsState)) {
-						//System.out.println("ding");
-						dest = absStates.getIndexOfLastAdd();
 						model.addState();
-						System.out.println(absSrc);
-						System.out.println(absStates);
-						System.out.println(dest);
-						//System.out.println(new Interval<Double>(distr.get(nextAbsState), distr.get(nextAbsState)));
-						double prob = distr.get(nextAbsState);
-						model.addToProbability(absSrc, dest, new Interval<Double>(prob, prob));
 					}
+					dest = absStates.getIndexOfLastAdd();
+					Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
+					if (dis.contains(dest)) {
+						double lower = Math.min(dis.get(dest).getLower(), distr.get(nextAbsState));
+						double upper = Math.max(dis.get(dest).getUpper(), distr.get(nextAbsState));
+						model.setProbability(absSrc, dest, new Interval<Double>(lower, upper));
+					}
+					else {
+						double lower;
+						double upper = distr.get(nextAbsState);
+						if (model.getTransitions(absSrc).size() > 0) {
+							lower = epsilon;
+						}
+						else {
+							lower = distr.get(nextAbsState);
+						}
+						model.addToProbability(absSrc, dest, new Interval<Double>(lower, upper));
+					}
+					scannedStates.add(dest);
 				}
-			System.out.println(absStates);
+				Set<Integer> disSupport = new HashSet<Integer>(model.getTransitions(absSrc).getSupport());
+				disSupport.removeAll(scannedStates);
+				Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
+				for (int j : disSupport) {
+					model.setProbability(absSrc, j, new Interval<Double>(epsilon, dis.get(j).getUpper()));
+				}
 			}
+			//System.out.println(model);
 		}
+		//System.out.println(absStates);
 	}
 	
 	/**
@@ -219,28 +258,23 @@ public class AbstractionTest
 			ModelGenerator<?> modelGen = prism.getModelGenerator();
 			
 			// Examine initial state
-			State state = modelGen.getInitialState();
+			//State state = modelGen.getInitialState();
 			//System.out.println("Initial state: " + state);
 			//System.out.println("Abstract variable state: " + findAbsState(state));
 			
 			// Examine successor states
-			modelGen.exploreState(state);
-			int numTransitions = modelGen.getNumTransitions(0);
-			for (int i = 0; i < numTransitions; i++) {
-				state = modelGen.computeTransitionTarget(0, i);
+			//modelGen.exploreState(state);
+			//int numTransitions = modelGen.getNumTransitions(0);
+			//for (int i = 0; i < numTransitions; i++) {
+				//state = modelGen.computeTransitionTarget(0, i);
 				//System.out.println("Successor state: " + state);
 				//System.out.println("Abstract variable state: " + findAbsState(state));
-			}
+			//}
 			
 			// Construct abstract model and print
-			//constructAbsModel(modelGen);
-			//System.out.print(model);
-			
-			IDTMCSimple<Double> imc = new IDTMCSimple<>();
-			imc.addState();
-			// THIS IS NOT WORKING
-			imc.addToProbability(0, 1, new Interval<Double>(0.0, 1.0));
-			
+			constructAbsModel(modelGen);
+			System.out.println(model);
+
 			// Close down PRISM
 			prism.closeDown();
 
