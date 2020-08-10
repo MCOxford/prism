@@ -8,7 +8,6 @@ import java.util.LinkedList;
 import java.util.Vector;
 import java.util.Set;
 import java.util.HashSet;
-
 import explicit.Distribution;
 import explicit.IDTMCSimple;
 import explicit.IndexedSet;
@@ -68,7 +67,6 @@ public class AbstractionTest
 	/**
 	 * Construct Abstract DTMC (This method works similarly to ConstructModel.java)
 	 * @param modelGen The ModelGenerator interface providing the (concrete) model
-	 * @return IDTMC model
 	 */
 	public void constructAbsModel(ModelGenerator<?> modelGen) throws PrismException
 	{
@@ -80,8 +78,8 @@ public class AbstractionTest
 		LinkedList<State> explore;
 		State state, stateNew;
 		// Misc
-		int i, nt, absSrc, dest;
-		//long timer;
+		int i, absSrc, dest;
+		int nt = 1;
 
 		// Get model info
 		modelType = modelGen.getModelType();
@@ -96,13 +94,12 @@ public class AbstractionTest
 		//mainLog.flush();
 		//ProgressDisplay progress = new ProgressDisplay(mainLog);
 		//progress.start();
-		//timer = System.currentTimeMillis();
 
 		// Create a (simple, mutable) model of the appropriate type
 		switch (modelType) {
 		case DTMC:
 			break;
-		case CTMC: // MIC: Would make a good future mini-project if CTMCs could be abstract in some way.
+		case CTMC: // nb: Would make a good future mini-project to abstract CTMCs using this code
 		case MDP:
 		case CTMDP:
 		case IDTMC:
@@ -115,14 +112,13 @@ public class AbstractionTest
 		// Create evaluator for model
 		model.setEvaluator(Evaluator.createForDoubleIntervals());
 		// Initialise states storage
-		// TODO: Is there a way to do this without the IndexedSet?
 		states = new IndexedSet<State>(true);
 		absStates = new IndexedSet<State>(true);
 		explore = new LinkedList<State>();
 		// Add initial state to 'explore', 'states' and to the model
 		// (For now, it must be unique)
 		if (!modelGen.hasSingleInitialState()) {
-			// TODO: Throw exception if there is more than one initial state
+			throw new PrismException("Error: dtmc must have a unique initial state");
 		}
 		State initState = modelGen.getInitialState();
 		explore.add(initState);
@@ -136,12 +132,18 @@ public class AbstractionTest
 			state = explore.removeFirst();
 			// Explore all transitions from this state
 			modelGen.exploreState(state);
-			nt = modelGen.getNumTransitions(0);
 			// Create set of successor states
 			StateStorage<State> nextStates = new IndexedSet<State>(true);
 			Map<State, Double> distr = new HashMap<State, Double>();
-			for (i = 0; i < nt; i++) {
-					stateNew = modelGen.computeTransitionTarget(0, i); // TODO: If deadlocks are present, fix it.
+			// If state is a deadlock, add a self-loop and continue
+			if (modelGen.isDeadlock()) {
+				nextStates.add(state);
+				distr.put(state, 1.0);
+			}
+			else {
+				nt = modelGen.getNumTransitions(0);
+				for (i = 0; i < nt; i++) {
+					stateNew = modelGen.computeTransitionTarget(0, i);
 					// Is this a new state?
 					if (states.add(stateNew)) {
 						// If so, add to the explore list
@@ -159,29 +161,24 @@ public class AbstractionTest
 						// Otherwise, update existing probability distribution with new information
 						distr.put(absState, distr.get(absState) + prob);
 					}
+				}
 			}
 			// Now, find the abstract state we are currently exploring using state
 			State currentAbsState = findAbsState(state);
 			// Has currentAbsState present in the ADTMC?
-			//System.out.println("current: " + currentAbsState);
-			//System.out.println("distr: " + distr);
 			if (absStates.add(currentAbsState)) {
+				// Get index of source (abstract) state
 				absSrc = absStates.getIndexOfLastAdd();
-				//System.out.println("absSrc: " + absSrc);
 				// If not and it is not the initial state, add it to the model
 				if (!model.isInitialState(absSrc)) {
 					model.addState();
 				}
-				//System.out.println("size: " + model.getNumStates());
-				// Get index of source (abstract) state
-				absSrc = absStates.getIndexOfLastAdd();
 				for(State nextAbsState : distr.keySet()) {
 					// if nextAbsState not in model, add it
 					if (absStates.add(nextAbsState)) {
 						model.addState();
-						//System.out.println("size: " + model.getNumStates());
 					}
-					// Get index of destination (abstract) state, add transition w/ interval
+					// Get index of destination (abstract) state, add transition with interval
 					dest = absStates.getIndexOfLastAdd();
 					double prob = distr.get(nextAbsState);
 					model.addToProbability(absSrc, dest, new Interval<Double>(prob, prob));
@@ -189,51 +186,53 @@ public class AbstractionTest
 			}
 			else {
 				absSrc = absStates.getIndexOfLastAdd();
-				//System.out.println("absSrc: " + absSrc);
-				//System.out.println(absStates.getEntrySet());
-				Set<Integer> scannedStates = new HashSet<Integer>();
+				// Get support of absSrc
+				Set<Integer> disSupport = new HashSet<Integer>(model.getTransitions(absSrc).getSupport());
+				Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
 				for(State nextAbsState : distr.keySet()) {
+					// if nextAbsState not in model, add it
 					if (absStates.add(nextAbsState)) {
 						model.addState();
 					}
+					// Get index of destination (abstract) state and distribution of absSrc
 					dest = absStates.getIndexOfLastAdd();
-					Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
+					// if distribution contains dest, update lower/upper bound of interval
 					if (dis.contains(dest)) {
 						double lower = Math.min(dis.get(dest).getLower(), distr.get(nextAbsState));
 						double upper = Math.max(dis.get(dest).getUpper(), distr.get(nextAbsState));
 						model.setProbability(absSrc, dest, new Interval<Double>(lower, upper));
 					}
 					else {
-						double lower;
+						double lower = distr.get(nextAbsState);
 						double upper = distr.get(nextAbsState);
-						if (model.getTransitions(absSrc).size() > 0) {
+						// If distribution is non-empty, there exists concrete states that do not
+						// go to states represented by dest i.e. change lower bound to be (close to)
+						// zero
+						if (dis.size() > 0) {
 							lower = epsilon;
 						}
-						else {
-							lower = distr.get(nextAbsState);
-						}
+						// Finally, add state and interval to distribution
 						model.addToProbability(absSrc, dest, new Interval<Double>(lower, upper));
 					}
-					scannedStates.add(dest);
+					// If disSupport contains dest, remove it
+					disSupport.remove(dest);
 				}
-				Set<Integer> disSupport = new HashSet<Integer>(model.getTransitions(absSrc).getSupport());
-				disSupport.removeAll(scannedStates);
-				Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
+				// For states that do exist in the support of absSrc but not in distr, change the lower
+				// bounds of the respective intervals to zero. 
 				for (int j : disSupport) {
 					model.setProbability(absSrc, j, new Interval<Double>(epsilon, dis.get(j).getUpper()));
 				}
 			}
-			//System.out.println(model);
 		}
-		//System.out.println(absStates);
 	}
 	
 	/**
 	 * Test method for demonstration purposes
-	 * @param args first element must be path to a PRISM model
+	 * @param args (first element must be path to a PRISM model, second element a .tra file to export model info)
 	 */
 	public void run(String[] args)
 	{
+		long timer;
 		try {
 			// Create a log for PRISM output (hidden or stdout)
 			PrismLog mainLog = new PrismDevNullLog();
@@ -250,8 +249,8 @@ public class AbstractionTest
 			// Extract abstract variables from formulas
 			FormulaList formulaList = modulesFile.getFormulaList();
 			findAbsFormulaList(formulaList);
-			System.out.println(absVarNames);
-			System.out.println(absVarExps);
+			System.out.println("\nabsVarNames: " + absVarNames);
+			System.out.println("\nabsVarExps: " + absVarExps);
 			
 			// Get model generator for PRISM model
 			prism.loadPRISMModel(modulesFile);
@@ -272,9 +271,17 @@ public class AbstractionTest
 			//}
 			
 			// Construct abstract model and print
+			timer = System.currentTimeMillis();
+			
 			constructAbsModel(modelGen);
-			System.out.println(model);
 
+			timer = System.currentTimeMillis() - timer;
+			System.out.println("\n" + model);
+			System.out.println("\nTime for model construction: " + timer / 1000.0 + " seconds.");
+			
+			// export model to .tra file
+			model.exportToPrismExplicitTra(args[1]);
+			
 			// Close down PRISM
 			prism.closeDown();
 
