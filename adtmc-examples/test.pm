@@ -3,6 +3,7 @@ dtmc
 
 // FORMULAE FOR ABSTRACT VARIABLES
 formula abs_a = (s=1|s=2?1:0) + (s=5|s=6?2:0) + (s=3|s=4?3:0);
+label "abs_t" = abs_a=2;
 
 module concrete
 
