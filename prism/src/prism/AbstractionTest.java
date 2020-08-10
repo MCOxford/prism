@@ -8,13 +8,20 @@ import java.util.LinkedList;
 import java.util.Vector;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.BitSet;
+import java.util.List;
+import java.util.ArrayList;
 import explicit.Distribution;
 import explicit.IDTMCSimple;
+import explicit.IDTMCModelChecker;
 import explicit.IndexedSet;
+import explicit.MinMax;
+import explicit.ModelCheckerResult;
 import explicit.StateStorage;
 import parser.State;
 import parser.ast.Expression;
 import parser.ast.FormulaList;
+import parser.ast.LabelList;
 import parser.ast.ModulesFile;
 
 import common.Interval;
@@ -27,6 +34,9 @@ public class AbstractionTest
 	private Vector<Expression> absVarExps = new Vector<Expression>();
 	// ADTMC to be constructed
 	private IDTMCSimple<Double> model = new IDTMCSimple<>();
+	// Target set of States
+	private Expression labelExp = null;
+	private List<Integer> targets = new ArrayList<Integer>();
 	// A very small value close to zero
 	private static double epsilon = 1e-14; 
 	
@@ -223,6 +233,10 @@ public class AbstractionTest
 					model.setProbability(absSrc, j, new Interval<Double>(epsilon, dis.get(j).getUpper()));
 				}
 			}
+			// Add absSrc to the target set if abs_t evaluates to true for state
+			if (labelExp.evaluateBoolean(state) && !targets.contains(absSrc)) {
+				targets.add(absSrc);
+			}
 		}
 	}
 	
@@ -252,6 +266,16 @@ public class AbstractionTest
 			System.out.println("\nabsVarNames: " + absVarNames);
 			System.out.println("\nabsVarExps: " + absVarExps);
 			
+			// Extract expression for label "abs_t"
+			LabelList labelList = modulesFile.getLabelList();
+			int ind = labelList.getLabelIndex("abs_t");
+			if (ind == -1) {
+				System.out.println("Error: abs_t label not found");
+				System.exit(1);
+			}
+			labelExp = labelList.getLabel(ind);
+			System.out.println("\nabs_t: " + labelExp);
+			
 			// Get model generator for PRISM model
 			prism.loadPRISMModel(modulesFile);
 			ModelGenerator<?> modelGen = prism.getModelGenerator();
@@ -272,15 +296,25 @@ public class AbstractionTest
 			
 			// Construct abstract model and print
 			timer = System.currentTimeMillis();
-			
 			constructAbsModel(modelGen);
-
 			timer = System.currentTimeMillis() - timer;
 			System.out.println("\n" + model);
 			System.out.println("\nTime for model construction: " + timer / 1000.0 + " seconds.");
 			
+			//System.out.println(targets);
+			BitSet targetsBit = new BitSet(model.getNumStates());
+			for (int i = 0; i < model.getNumStates(); i++) {
+				if (targets.contains(i)) {
+					targetsBit.set(i);
+				}
+			}
+			
+			IDTMCModelChecker mc = new IDTMCModelChecker(prism);
+			ModelCheckerResult mcRes = mc.computeReachProbs(model, targetsBit, MinMax.min());
+			System.out.println("\nMin. Probability of reaching target set: " + mcRes.soln[0]);
+			
 			// export model to .tra file
-			model.exportToPrismExplicitTra(args[1]);
+			//model.exportToPrismExplicitTra(args[1]);
 			
 			// Close down PRISM
 			prism.closeDown();
