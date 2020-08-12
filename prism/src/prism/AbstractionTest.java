@@ -1,3 +1,6 @@
+/**
+ * 2020- mco, dxp
+ */
 package prism;
 
 import java.io.File;
@@ -23,22 +26,25 @@ import parser.ast.Expression;
 import parser.ast.FormulaList;
 import parser.ast.LabelList;
 import parser.ast.ModulesFile;
-
 import common.Interval;
 
 public class AbstractionTest
 {
 	// List of abstract variable names
-	private Vector<String> absVarNames = new Vector<String>();
+	protected Vector<String> absVarNames = new Vector<String>();
 	// List of abstract variable formulae. Should match up pair wise with absVarNames elements.
-	private Vector<Expression> absVarExps = new Vector<Expression>();
+	protected Vector<Expression> absVarExps = new Vector<Expression>();
 	// ADTMC to be constructed
-	private IDTMCSimple<Double> model = new IDTMCSimple<>();
+	protected IDTMCSimple<Double> model = new IDTMCSimple<>();
+	// Set of abstract states;
+	protected List<State> statesList;
 	// Target set of States
-	private Expression labelExp = null;
-	private List<Integer> targets = new ArrayList<Integer>();
+	protected Expression labelExp = null;
+	protected List<Integer> targets = new ArrayList<Integer>();
 	// A very small value close to zero
-	private static double epsilon = 1e-14; 
+	private static double epsilon = Double.MIN_VALUE; 
+	// timer
+	private static long timer;
 	
 	/**
 	 * Find Abstract variables names and formulae and add them to vectors absVarNames
@@ -75,6 +81,20 @@ public class AbstractionTest
 	}
 	
 	/**
+	 * Reset timer
+	 */
+	public void resetTimer() {
+		timer = System.currentTimeMillis();
+	}
+
+	/**
+	 * Compute total amount of time elapsed (in seconds). Assume that
+	 * timer has been initialised
+	 */
+	public double computeTime() {
+		return (System.currentTimeMillis() - timer) / 1000.0;
+	}
+	/**
 	 * Construct Abstract DTMC (This method works similarly to ConstructModel.java)
 	 * @param modelGen The ModelGenerator interface providing the (concrete) model
 	 */
@@ -93,17 +113,6 @@ public class AbstractionTest
 
 		// Get model info
 		modelType = modelGen.getModelType();
-		
-		// Display a warning if there are unbounded vars
-		//VarList varList = modelGen.createVarList();
-		//if (modelGen.containsUnboundedVariables())
-			//mainLog.printWarning("Model contains one or more unbounded variables: model construction may not terminate");
-
-		// Starting reachability...
-		//mainLog.print("\nComputing reachable states...");
-		//mainLog.flush();
-		//ProgressDisplay progress = new ProgressDisplay(mainLog);
-		//progress.start();
 
 		// Create a (simple, mutable) model of the appropriate type
 		switch (modelType) {
@@ -198,7 +207,7 @@ public class AbstractionTest
 				absSrc = absStates.getIndexOfLastAdd();
 				// Get support of absSrc
 				Set<Integer> disSupport = new HashSet<Integer>(model.getTransitions(absSrc).getSupport());
-				Distribution<Interval<Double>> dis = model.getTransitions(absSrc);
+				Distribution<Interval<Double>> dis = new Distribution<Interval<Double>>(model.getTransitions(absSrc));
 				for(State nextAbsState : distr.keySet()) {
 					// if nextAbsState not in model, add it
 					if (absStates.add(nextAbsState)) {
@@ -238,15 +247,22 @@ public class AbstractionTest
 				targets.add(absSrc);
 			}
 		}
+		// Print indexed set of abstract states
+		//System.out.println(absStates);
+		// Sort state info and add to model
+		//int permut[] = null;
+		//permut = absStates.buildSortingPermutation();
+		//statesList = absStates.toPermutedArrayList(permut);
+		//model = new IDTMCSimple<Double>(model, permut);
+		//model.setStatesList(statesList);
 	}
 	
 	/**
 	 * Test method for demonstration purposes
-	 * @param args (first element must be path to a PRISM model, second element a .tra file to export model info)
+	 * @param args (first element must be path to a PRISM model)
 	 */
 	public void run(String[] args)
 	{
-		long timer;
 		try {
 			// Create a log for PRISM output (hidden or stdout)
 			PrismLog mainLog = new PrismDevNullLog();
@@ -263,18 +279,20 @@ public class AbstractionTest
 			// Extract abstract variables from formulas
 			FormulaList formulaList = modulesFile.getFormulaList();
 			findAbsFormulaList(formulaList);
-			System.out.println("\nabsVarNames: " + absVarNames);
-			System.out.println("\nabsVarExps: " + absVarExps);
+			System.out.println("\nAbstract variable names and expressions:");
+			for (int i = 0; i < absVarNames.size(); i++) {
+				System.out.println("(" + absVarExps.get(i).getType() + ") " + absVarNames.get(i) + " = " + absVarExps.get(i));
+			}
 			
 			// Extract expression for label "abs_t"
 			LabelList labelList = modulesFile.getLabelList();
 			int ind = labelList.getLabelIndex("abs_t");
 			if (ind == -1) {
-				System.out.println("Error: abs_t label not found");
+				System.out.println("\nError: abs_t label not found");
 				System.exit(1);
 			}
 			labelExp = labelList.getLabel(ind);
-			System.out.println("\nabs_t: " + labelExp);
+			System.out.println("\nTarget set conditions:\n" + labelExp);
 			
 			// Get model generator for PRISM model
 			prism.loadPRISMModel(modulesFile);
@@ -295,13 +313,14 @@ public class AbstractionTest
 			//}
 			
 			// Construct abstract model and print
+			System.out.println("\nConstructing ADTMC model...");
 			timer = System.currentTimeMillis();
 			constructAbsModel(modelGen);
-			timer = System.currentTimeMillis() - timer;
-			System.out.println("\n" + model);
-			System.out.println("\nTime for model construction: " + timer / 1000.0 + " seconds.");
+			double time = computeTime();
+			System.out.println("\nType:\t\t" + model.getModelType() + "\nStates:\t\t" + model.getNumStates() + "\nTransitions:\t" + model.getNumTransitions());
+			System.out.println("\nTime for model construction: " + time + " seconds.");
 			
-			//System.out.println(targets);
+			// Set states in targetsBit to true if in targets
 			BitSet targetsBit = new BitSet(model.getNumStates());
 			for (int i = 0; i < model.getNumStates(); i++) {
 				if (targets.contains(i)) {
@@ -310,12 +329,32 @@ public class AbstractionTest
 			}
 			
 			IDTMCModelChecker mc = new IDTMCModelChecker(prism);
-			ModelCheckerResult mcRes = mc.computeReachProbs(model, targetsBit, MinMax.min());
-			System.out.println("\nMin. Probability of reaching target set: " + mcRes.soln[0]);
+
+			// Compute probabilistic reachability 
+			System.out.println("\nComputing probabilistic reachability...");
 			
-			// export model to .tra file
+			resetTimer();
+			ModelCheckerResult mcResMin = mc.computeReachProbs(model, targetsBit, MinMax.min());
+			double timeMin = computeTime();
+
+			resetTimer();
+			ModelCheckerResult mcResMax = mc.computeReachProbs(model, targetsBit, MinMax.max());
+			double timeMax = computeTime();
+
+			System.out.println("\nProbability of reaching target set:\nMinimum: " + mcResMin.soln[0] + "\t(" + timeMin + "s)\nMaximum: " + mcResMax.soln[0] + "\t(" + timeMax + "s)");
+			
+			System.out.print("\nComputing (minimal) bounded reachability...");
+			for (int i = 1; i <= 20; i++) {
+				resetTimer();
+				ModelCheckerResult mcRes = mc.computeBoundedReachProbs(model, targetsBit, 4*i, MinMax.min());
+				double roundTime = computeTime();
+				System.out.println("\nRound " + i + " (" + 4*i + " steps): " + mcRes.soln[0] + "\t(" + roundTime + "s)");
+			}
+			
+			// For debugging purposes only
 			//model.exportToPrismExplicitTra(args[1]);
-			
+			model.exportToDotFile(args[1], targetsBit);
+		
 			// Close down PRISM
 			prism.closeDown();
 
