@@ -1,0 +1,208 @@
+dtmc
+
+formula c1_detection = c1d | (c1s=1 & (s1_sth+c1_sth=3 | s1d)) | (c1s=2 & (s2_sth+c1_sth=3 | s2d));
+formula c1_connected_server_has_real = (c1s=1 & s1_sth=1) | (c1s=2 & s2_sth=1);
+formula c1_connected_server_has_fake = (c1s=1 & s1_sth=2) | (c1s=2 & s2_sth=2);
+
+formula c2_detection = c2d | (c2s=1 & (s1_sth+c2_sth=3 | s1d)) | (c2s=2 & s2_sth+c2_sth=3);
+formula c2_connected_server_has_real = (c2s=1 & s1_sth=1) | (c2s=2 & s2_sth=1);
+formula c2_connected_server_has_fake = (c2s=1 & s1_sth=2) | (c2s=2 & s2_sth=2);
+
+formula updated_client_gossips = (c1=1 & c1_sth>0 & c1_skip=false) | (c2=1 & c2_sth>0 & c2_skip=false);
+formula nonupdated_client_gossips = (c1=1 & c1_sth=0 & c1_skip=false) | (c2=1 & c2_sth=0 & c2_skip=false);
+
+formula s1_detection = (c1s=1 & c1_sth+s1_sth=3) | (c2s=1 & c2_sth+s1_sth=3);
+formula s2_detection = (c1s=2 & c1_sth+s2_sth=3) | (c2s=2 & c2_sth+s2_sth=3);
+
+// FORMULAE FOR ABSTRACT VARIABLES
+formula abs_real_count = 0 +
+    ((c1=2 & ((c1_sth=0 & c1_connected_server_has_real) | c1_sth=1)) | (c1!=2 & c1_sth=1)?1:0) +
+    ((c2=2 & ((c2_sth=0 & c2_connected_server_has_real) | c2_sth=1)) | (c2!=2 & c2_sth=1)?1:0);
+
+formula abs_fake_count = 0 +
+    ((c1=2 & ((c1_sth=0 & c1_connected_server_has_fake) | c1_sth=2)) | (c1!=2 & c1_sth=2)?1:0) +
+    ((c2=2 & ((c2_sth=0 & c2_connected_server_has_fake) | c2_sth=2)) | (c2!=2 & c2_sth=2)?1:0);
+
+formula abs_cd = ((c1=2 & c1_detection) | (c1!=2 & c1d)) |
+    ((c2=2 & c2_detection) | (c2!=2 & c2d));
+
+formula abs_stage = 0 + 
+	(s1_flag=1 & s2_flag=1 & c1=0 & c2=0?1:0) +
+	(serverg & c1=0 & c2=0?2:0) + 
+    (serverg & (c1=1 | c2=1) & (updated_client_gossips & !nonupdated_client_gossips)?3:0) +
+	(serverg & (c1=1 | c2=1) & (!updated_client_gossips & nonupdated_client_gossips)?4:0) + 
+	(serverg & (c1=1 | c2=1) & (updated_client_gossips & nonupdated_client_gossips)?5:0) + 
+	(serverg & (c1=1 | c2=1) & !updated_client_gossips & !nonupdated_client_gossips?6:0) +
+	(serverg & c1=2&c2=2?7:0) +
+	(serverg & c1=3&c2=3?8:0) + 
+	(serverg_rc & c1=3&c2=3?9:0) +
+    (c1=4&c2=4?10:0);
+
+formula abs_s1d = ((s1d | (!s1d & s1_detection))?1:0);
+
+formula abs_s2d = ((s2d | (!s2d & s2_detection))?1:0);
+
+formula abs_flag = (c1_flag?1:0)+(c2_flag?1:0);
+
+label "abs_t" = abs_cd & abs_stage>=8;
+
+const bool c0_flag = true;
+
+const int c1_sth_init = 2;
+const int c2_sth_init = 0;
+
+prob g1 = 0.2;
+prob g2 = 0.8;
+
+prob p_1_1 = 0.6;
+prob p_1_2 = 0.4;
+
+prob p_2_1 = 0.25;
+prob p_2_2 = 0.75;
+
+module Client1
+
+	c1 : [0..4] init 0;
+	c1s : [0..2] init 0;
+	c1_sth : [0..2] init c1_sth_init;
+	c1d : bool init false;
+	c1_skip : bool init false;
+	c1_flag : bool init false;
+
+	[] serverg & c0_flag & c1=0 -> g1 : (c1'=1) + 1-g1 : (c1'=1) & (c1_skip'=true);
+	[] serverg & c0_flag & c1_skip=false & c1=1 -> p_1_1 : (c1_flag'=true)&(c1'=2)&(c1s'=1) +
+					 p_1_2 : (c1_flag'=true)&(c1'=2)&(c1s'=2);
+	[] serverg & c0_flag & c1_skip=true & c1=1 -> (c1_flag'=true)&(c1'=2);
+	[update] !c1_skip & c1=2 & s_data_ok -> (c1_sth'=c_update) & (c1'=3);
+	[update] !c1_skip & c1=2 & !s_data_ok -> (c1d'=true) & (c1'=3);
+	[update] c1_skip & c1=2 -> (c1'=3);
+	[round_complete_2] serverg_rc & c1=3 & !detect -> (c1'=0) & (c1s'=0) & (c1_skip'=false) & (c1_flag'=false);
+	[round_complete_2] serverg_rc & c1=3 & detect -> (c1'=4) & (c1s'=0) & (c1_skip'=false);
+	[END] c1=4 -> true;
+
+endmodule
+
+formula pr_req_successful = (c1s=1 & s1_sth+c1_sth!=3) | (c1s=2 & s2_sth+c1_sth!=3);
+
+formula warn_msg = (c1s=1 & s1d) | (c1s=2 & s2d);
+
+formula c_update = c1_sth + ((c1s=1 & s1_sth>c1_sth)?s1_sth-c1_sth:0) + ((c1s=2 & s2_sth>c1_sth)?s2_sth-c1_sth:0);
+
+formula detect = c1d | c2d;
+
+formula serverg = s1_flag=2 & s2_flag=2;
+formula serverg_rc = s1_flag=3 & s2_flag=3;
+
+label "detect" = c1d | c2d;
+
+
+
+formula s_data_ok = pr_req_successful & !warn_msg;
+module Client2=Client1[p_1_1=p_2_1,p_1_2=p_2_2,
+g1=g2,
+c1=c2,
+c1s=c2s,
+c1_sth=c2_sth,
+c2_sth=c1_sth,
+c1_skip=c2_skip,
+c1d=c2d, c2d=c1d,
+c1_flag=c2_flag, c0_flag=c1_flag,
+c1_sth_init = c2_sth_init] endmodule
+
+const int sf_init = 0;
+
+const int SERVER1 = 1;
+const int SERVER2 = 2;
+
+const int s1_init = 1;
+const int s2_init = 0;
+
+formula real_2c1 = (s1_sth=1?1/5:0) +
+(s2_sth=1?1/5:0);
+formula fake_2c1 = (s1_sth=2?1/5:0) +
+(s2_sth=2?1/5:0);
+formula mssg_2c1 = (s1d?1/5:0) +
+(s2d?1/5:0);
+formula real_2c2 = (s1_sth=1?1/5:0)*(s2_sth=1?1/5:0);
+formula fake_2c2 = (s1_sth=2?1/5:0)*(s2_sth=2?1/5:0);
+formula mssg_2c2 = (s1d?1/5:0)*(s2d?1/5:0);
+
+formula get_real_data = real_2c1 - real_2c2;
+formula get_fake_data = fake_2c1 - fake_2c2;
+formula get_message = mssg_2c1 - mssg_2c2;
+
+module Server1
+
+	s1_sth : [0..2] init s1_init;
+	s1d : bool init false;
+	s1_flag : [0..3] init sf_init;
+
+	[update] !s1d & c_data_ok -> (s1_sth'=s_update);
+	[update] !s1d & !c_data_ok -> (s1d'=true) & (s1_sth'=0);
+	[update] s1d -> true;
+	[spread1] !detect & s1_flag=0 & !s1d & s1_sth=0 -> get_real_data : (s1_sth'=1) & (s1_flag'=1) + 1-get_real_data : (s1_flag'=1);
+	[spread1] !detect & s1_flag=0 & !s1d & s1_sth=1 -> (s1_flag'=1);
+	[spread1] !detect & s1_flag=0 & !s1d & s1_sth=2 -> get_real_data : (s1d'=true) & (s1_sth'=0) & (s1_flag'=1) + 1-get_real_data : (s1_flag'=1);
+	[spread1] !detect & s1_flag=0 & s1d -> (s1_flag'=1);
+	[spread2] s1_flag=1 & !s1d & s1_sth=0 -> get_fake_data : (s1_sth'=2) & (s1_flag'=2)  + 1-get_fake_data : (s1_flag'=2);
+	[spread2] s1_flag=1 & !s1d & s1_sth=1 -> get_fake_data : (s1d'=true) & (s1_sth'=0) & (s1_flag'=2) + 1-get_fake_data : (s1_flag'=2);
+	[spread2] s1_flag=1 & !s1d & s1_sth=2 -> (s1_flag'=2);
+	[spread2] s1_flag=1 & s1d -> (s1_flag'=2);
+	[round_complete] !detect & s1_flag=2 & !s1d & c1=3 -> get_message : (s1d'=true) & (s1_sth'=0) & (s1_flag'=3) + 1-get_message : (s1_flag'=3);
+	[round_complete] ((!detect & s1_flag=2 & s1d) | (s1_flag=2 & detect)) & c1=3 -> (s1_flag'=3);
+	[round_complete_2] s1_flag=3 -> (s1_flag'=sf_init);
+	[END] true -> true;
+
+endmodule
+
+formula server_pr_req_fail = (c1s=SERVER1 & c1_sth+s1_sth=3) | (c2s=SERVER1 & c2_sth+s1_sth=3);
+
+formula pairwise_inconsistency = ((c1s=SERVER1 & c1_sth=1) | (c2s=SERVER1 & c2_sth=1)) & ((c1s=SERVER1 & c1_sth=2) | (c2s=SERVER1 & c2_sth=2));
+
+formula s_update = s1_sth + max((c1s=SERVER1 & c1_sth>s1_sth?c1_sth-s1_sth:0),(c2s=SERVER1 & c2_sth>s1_sth?c2_sth-s1_sth:0));
+
+
+formula c_data_ok = !server_pr_req_fail & !pairwise_inconsistency;
+module Server2=Server1[s1_sth=s2_sth,s2_sth=s1_sth,SERVER1=SERVER2,s1d=s2d,s2d=s1d,s1_flag=s2_flag,s1_init=s2_init] endmodule
+
+const double f = 1/2;
+
+formula no_clients_old = (c1_sth=0?f:0)+(c2_sth=0?f:0);
+
+formula no_clients_real = (c1_sth=1?f:0)+(c2_sth=1?f:0);
+
+formula no_clients_fake = (c1_sth=2?f:0)+(c2_sth=2?f:0);
+
+formula client1_getConsistency_STHOnly = c1_skip=false & c1=2 & ((c1s=1 & c1_sth!=s1_sth) | (c1s=2 & c1_sth!=s2_sth));
+formula client2_getConsistency_STHOnly = c2_skip=false & c2=2 & ((c2s=1 & c2_sth!=s1_sth) | (c2s=2 & c2_sth!=s2_sth));
+
+formula log_connections_STHOnly = (client1_getConsistency_STHOnly?1:0)+(client2_getConsistency_STHOnly?1:0);
+
+formula client1_getConsistency_STHAndProof = c1_skip=false & c1=2 & ((c1s=1 & (c1_sth>s1_sth | (c1_sth=1 & s1_sth=2))) | (c1s=2 & (c1_sth>s2_sth | (c1_sth=1 & s2_sth=2))));
+formula client2_getConsistency_STHAndProof = c2_skip=false & c2=2 & ((c2s=1 & (c2_sth>s1_sth | (c2_sth=1 & s1_sth=2))) | (c2s=2 & (c2_sth>s2_sth | (c2_sth=1 & s2_sth=2))));
+
+formula log_connections_STHAndProof = (client1_getConsistency_STHAndProof?1:0)+(client2_getConsistency_STHAndProof?1:0);
+
+rewards "rounds"
+	true : 1/4;
+endrewards
+
+rewards "log_connections_STHOnly"
+	[update] true : log_connections_STHOnly;
+endrewards
+
+rewards "log_connections_STHAndProof"
+	[update] true : log_connections_STHAndProof;
+endrewards
+
+rewards "client_proportion_old"
+	true : no_clients_old;
+endrewards
+
+rewards "client_proportion_real"
+	true : no_clients_real;
+endrewards
+
+rewards "client_proportion_fake"
+	true : no_clients_fake;
+endrewards
