@@ -3,8 +3,8 @@
  */
 package prism;
 
-import java.io.File;
-import java.io.FileNotFoundException;
+import java.io.*;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.LinkedList;
@@ -14,6 +14,7 @@ import java.util.HashSet;
 import java.util.BitSet;
 import java.util.List;
 import java.util.ArrayList;
+
 import explicit.Distribution;
 import explicit.IDTMCSimple;
 import explicit.IDTMCModelChecker;
@@ -21,11 +22,15 @@ import explicit.IndexedSet;
 import explicit.MinMax;
 import explicit.ModelCheckerResult;
 import explicit.StateStorage;
+
 import parser.State;
 import parser.ast.Expression;
 import parser.ast.FormulaList;
 import parser.ast.LabelList;
 import parser.ast.ModulesFile;
+import parser.VarList;
+import parser.type.*;
+
 import common.Interval;
 
 public class AbstractionTest
@@ -45,6 +50,12 @@ public class AbstractionTest
 	private static double epsilon = Double.MIN_VALUE; 
 	// timer
 	private static long timer;
+	// List of (concrete variables)
+	private VarList variableList;
+	// Iterating state
+	protected State enumerateState;
+	// index of enumerateState
+	protected int index = 0;
 	
 	/**
 	 * Find Abstract variables names and formulae and add them to vectors absVarNames
@@ -81,6 +92,27 @@ public class AbstractionTest
 	}
 	
 	/**
+	 * Export target set to file
+	 * @param filename file name to export to
+	 * @throws IOException 
+	 */
+	public void exportTargetSet(String filename) throws PrismException, IOException
+	{
+		FileOutputStream out = null;
+		try {
+			out = new FileOutputStream(filename);
+			BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(out));
+			for (Integer target : targets) {
+				bw.write(target.toString());
+				bw.newLine();
+			}
+			bw.close();
+		} catch (IOException e) {
+			System.out.println("File not found: " + e);
+		}
+	}
+	
+	/**
 	 * Reset timer
 	 */
 	public void resetTimer() {
@@ -94,14 +126,64 @@ public class AbstractionTest
 	public double computeTime() {
 		return (System.currentTimeMillis() - timer) / 1000.0;
 	}
+	
+	/**
+	 * Use enumerateState to go to the next possible state (reachable from the
+	 * initial state or otherwise
+	 */
+	public void toNextState() {
+		int newIndex = 0;
+		for (int i = index; i >= 0; i--) {
+			if (variableList.getType(i) instanceof TypeBool) {
+				if (i == index) {
+					enumerateState.setValue(i, true);
+				} else {
+					enumerateState.setValue(i, false);
+				}
+			} else if (variableList.getType(i) instanceof TypeInt) {
+				int lo = variableList.getLow(i);
+				if (i == index) {
+					enumerateState.setValue(i, (Integer) enumerateState.varValues[i] + 1);
+				} else {
+					enumerateState.setValue(i, lo);
+				}
+			}
+		}
+		for (int j = 0; j < variableList.getNumVars(); j++) {
+			if (variableList.getType(j) instanceof TypeBool) {
+				if ((Boolean) enumerateState.varValues[j] == true) {
+					newIndex++;
+				}
+				else {
+					break;
+				}
+			} else if (variableList.getType(j) instanceof TypeInt) {
+				int hi = variableList.getHigh(j);
+				if ((Integer) enumerateState.varValues[j] == hi) {
+					newIndex++;
+				} 
+				else {
+					break;
+				}
+			}
+		}
+		index = newIndex;
+	}
+	
+	public Interval<Double> addition(Interval<Double> i1, Interval<Double> i2) {
+		return new Interval<Double>(i1.getLower() + i2.getLower(), Math.min(1, i1.getUpper() + i2.getUpper()));
+	}
+	
 	/**
 	 * Construct Abstract DTMC (This method works similarly to ConstructModel.java)
 	 * @param modelGen The ModelGenerator interface providing the (concrete) model
 	 */
-	public void constructAbsModel(ModelGenerator<?> modelGen) throws PrismException
-	{
+	public void constructAbsModel(ModelGenerator<?> modelGen) throws PrismException {
 		// Model info
 		ModelType modelType;
+		// distr is used in the process of abstracting DTMCs, distrInt for IDTMCs
+		Map<State, Double> distr = new HashMap<State, Double>();
+		Map<State, Interval<Double>> distrInt = new HashMap<State, Interval<Double>>();;
 		// State storage
 		StateStorage<State> states;
 		StateStorage<State> absStates;
@@ -113,15 +195,16 @@ public class AbstractionTest
 
 		// Get model info
 		modelType = modelGen.getModelType();
+		System.out.println(modelType);
 
 		// Create a (simple, mutable) model of the appropriate type
 		switch (modelType) {
 		case DTMC:
+		case IDTMC:
 			break;
-		case CTMC: // nb: Would make a good future mini-project to abstract CTMCs using this code
+		case CTMC: // MIC: Would make a good future mini-project to abstract CTMCs using this code
 		case MDP:
 		case CTMDP:
-		case IDTMC:
 		case STPG:
 		case SMG:
 		case PTA:
@@ -153,11 +236,21 @@ public class AbstractionTest
 			modelGen.exploreState(state);
 			// Create set of successor states
 			StateStorage<State> nextStates = new IndexedSet<State>(true);
-			Map<State, Double> distr = new HashMap<State, Double>();
+			if (modelType == ModelType.DTMC) {
+				distr = new HashMap<State, Double>();
+			}
+			if (modelType == ModelType.IDTMC) {
+				distrInt = new HashMap<State, Interval<Double>>();
+			}
 			// If state is a deadlock, add a self-loop and continue
 			if (modelGen.isDeadlock()) {
 				nextStates.add(state);
-				distr.put(state, 1.0);
+				if (modelType == ModelType.DTMC) {
+					distr.put(state, 1.0);
+				}
+				if (modelType == ModelType.IDTMC) {
+					distrInt.put(state, new Interval<Double>(1.0, 1.0));
+				}
 			}
 			else {
 				nt = modelGen.getNumTransitions(0);
@@ -170,15 +263,25 @@ public class AbstractionTest
 					}
 					// Find which abstract state (concrete) stateNew maps to
 					State absState = findAbsState(stateNew);
-					// Has a new (abstract) successor state been found?
-					double prob = (double) modelGen.getTransitionProbability(0, i);
-					if (nextStates.add(absState)) {
-						// If so, extend probability distribution with new information
-						distr.put(absState, prob);
+					if (modelType == ModelType.DTMC) {
+						double prob = (double) modelGen.getTransitionProbability(0, i);
+						// Has a new (abstract) successor state been found?
+						if (nextStates.add(absState)) {
+							// If so, extend probability distribution with new information
+							distr.put(absState, prob);
+						}
+						else {
+							distr.put(absState, distr.get(absState) + prob);
+						}
 					}
-					else {
-						// Otherwise, update existing probability distribution with new information
-						distr.put(absState, distr.get(absState) + prob);
+					if (modelType == ModelType.IDTMC) {
+						Interval<Double> prob = (Interval<Double>) modelGen.getTransitionProbability(0, i);
+						if (nextStates.add(absState)) {
+							distrInt.put(absState, prob);
+						}
+						else {
+							distrInt.put(absState, addition(distrInt.get(absState), prob));
+						}
 					}
 				}
 			}
@@ -192,15 +295,29 @@ public class AbstractionTest
 				if (!model.isInitialState(absSrc)) {
 					model.addState();
 				}
-				for(State nextAbsState : distr.keySet()) {
-					// if nextAbsState not in model, add it
-					if (absStates.add(nextAbsState)) {
-						model.addState();
+				if (modelType == ModelType.DTMC) {
+					for(State nextAbsState : distr.keySet()) {
+						// if nextAbsState not in model, add it
+						if (absStates.add(nextAbsState)) {
+							model.addState();
+						}
+						// Get index of destination (abstract) state, add transition with interval
+						dest = absStates.getIndexOfLastAdd();
+						double prob = distr.get(nextAbsState);
+						model.addToProbability(absSrc, dest, new Interval<Double>(prob, prob));
 					}
-					// Get index of destination (abstract) state, add transition with interval
-					dest = absStates.getIndexOfLastAdd();
-					double prob = distr.get(nextAbsState);
-					model.addToProbability(absSrc, dest, new Interval<Double>(prob, prob));
+				}
+				if (modelType == ModelType.IDTMC) {
+					for(State nextAbsState : distrInt.keySet()) {
+						// if nextAbsState not in model, add it
+						if (absStates.add(nextAbsState)) {
+							model.addState();
+						}
+						// Get index of destination (abstract) state, add transition with interval
+						dest = absStates.getIndexOfLastAdd();
+						Interval<Double> prob = distrInt.get(nextAbsState);
+						model.addToProbability(absSrc, dest, prob);
+					}
 				}
 			}
 			else {
@@ -208,33 +325,65 @@ public class AbstractionTest
 				// Get support of absSrc
 				Set<Integer> disSupport = new HashSet<Integer>(model.getTransitions(absSrc).getSupport());
 				Distribution<Interval<Double>> dis = new Distribution<Interval<Double>>(model.getTransitions(absSrc));
-				for(State nextAbsState : distr.keySet()) {
-					// if nextAbsState not in model, add it
-					if (absStates.add(nextAbsState)) {
-						model.addState();
-					}
-					// Get index of destination (abstract) state and distribution of absSrc
-					dest = absStates.getIndexOfLastAdd();
-					// if distribution contains dest, update lower/upper bound of interval
-					if (dis.contains(dest)) {
-						double lower = Math.min(dis.get(dest).getLower(), distr.get(nextAbsState));
-						double upper = Math.max(dis.get(dest).getUpper(), distr.get(nextAbsState));
-						model.setProbability(absSrc, dest, new Interval<Double>(lower, upper));
-					}
-					else {
-						double lower = distr.get(nextAbsState);
-						double upper = distr.get(nextAbsState);
-						// If distribution is non-empty, there exists concrete states that do not
-						// go to states represented by dest i.e. change lower bound to be (close to)
-						// zero
-						if (dis.size() > 0) {
-							lower = epsilon;
+				if (modelType == ModelType.DTMC) {
+					for(State nextAbsState : distr.keySet()) {
+						// if nextAbsState not in model, add it
+						if (absStates.add(nextAbsState)) {
+							model.addState();
 						}
-						// Finally, add state and interval to distribution
-						model.addToProbability(absSrc, dest, new Interval<Double>(lower, upper));
+						// Get index of destination (abstract) state and distribution of absSrc
+						dest = absStates.getIndexOfLastAdd();
+						// if distribution contains dest, update lower/upper bound of interval
+						if (dis.contains(dest)) {
+							double lower = Math.min(dis.get(dest).getLower(), distr.get(nextAbsState));
+							double upper = Math.max(dis.get(dest).getUpper(), distr.get(nextAbsState));
+							model.setProbability(absSrc, dest, new Interval<Double>(lower, upper));
+						}
+						else {
+							double lower = distr.get(nextAbsState);
+							double upper = distr.get(nextAbsState);
+							// If distribution is non-empty, there exists concrete states that do not
+							// go to states represented by dest i.e. change lower bound to be (close to)
+							// zero
+							if (dis.size() > 0) {
+								lower = epsilon;
+							}
+							// Finally, add state and interval to distribution
+							model.addToProbability(absSrc, dest, new Interval<Double>(lower, upper));
+						}
+						// If disSupport contains dest, remove it
+						disSupport.remove(dest);
 					}
-					// If disSupport contains dest, remove it
-					disSupport.remove(dest);
+				}
+				if (modelType == ModelType.IDTMC) {
+					for(State nextAbsState : distrInt.keySet()) {
+						// if nextAbsState not in model, add it
+						if (absStates.add(nextAbsState)) {
+							model.addState();
+						}
+						// Get index of destination (abstract) state and distribution of absSrc
+						dest = absStates.getIndexOfLastAdd();
+						// if distribution contains dest, update lower/upper bound of interval
+						if (dis.contains(dest)) {
+							double lower = Math.min(dis.get(dest).getLower(), distrInt.get(nextAbsState).getLower());
+							double upper = Math.max(dis.get(dest).getUpper(), distrInt.get(nextAbsState).getUpper());
+							model.setProbability(absSrc, dest, new Interval<Double>(lower, upper));
+						}
+						else {
+							double lower = distrInt.get(nextAbsState).getLower();
+							double upper = distrInt.get(nextAbsState).getUpper();
+							// If distribution is non-empty, there exists concrete states that do not
+							// go to states represented by dest i.e. change lower bound to be (close to)
+							// zero
+							if (dis.size() > 0) {
+								lower = epsilon;
+							}
+							// Finally, add state and interval to distribution
+							model.addToProbability(absSrc, dest, new Interval<Double>(lower, upper));
+						}
+						// If disSupport contains dest, remove it
+						disSupport.remove(dest);
+					}
 				}
 				// For states that do exist in the support of absSrc but not in distr, change the lower
 				// bounds of the respective intervals to zero. 
@@ -247,22 +396,21 @@ public class AbstractionTest
 				targets.add(absSrc);
 			}
 		}
-		// Print indexed set of abstract states
-		//System.out.println(absStates);
-		// Sort state info and add to model
-		//int permut[] = null;
-		//permut = absStates.buildSortingPermutation();
-		//statesList = absStates.toPermutedArrayList(permut);
-		//model = new IDTMCSimple<Double>(model, permut);
-		//model.setStatesList(statesList);
+		states.clear();
+		states = null;
+		// Print out unordered index set of abstract states (for debugging purposes only) 
+//		System.out.println(absStates);
 	}
 	
 	/**
 	 * Test method for demonstration purposes
 	 * @param args (first element must be path to a PRISM model)
+	 * @throws IOException 
 	 */
-	public void run(String[] args)
+	public void run(String[] args) throws IOException
 	{
+		int ROUND_NUMBER = 4;
+		
 		try {
 			// Create a log for PRISM output (hidden or stdout)
 			PrismLog mainLog = new PrismDevNullLog();
@@ -298,19 +446,33 @@ public class AbstractionTest
 			prism.loadPRISMModel(modulesFile);
 			ModelGenerator<?> modelGen = prism.getModelGenerator();
 			
+			// Initialise enumerated state
+//			variableList = new VarList(modelGen);
+//			int numVars = variableList.getNumVars();
+//			enumerateState = new State(numVars);
+//			for(int i=0; i < numVars; i++) {
+//				if (variableList.getType(i) instanceof TypeBool) {
+//					enumerateState.setValue(i, false);
+//				} else if (variableList.getType(i) instanceof TypeInt) {
+//					int lo = variableList.getLow(i);
+//					int hi = variableList.getHigh(i);
+//					enumerateState.setValue(i, lo);
+//				}
+//			}
+			
 			// Examine initial state
-			//State state = modelGen.getInitialState();
-			//System.out.println("Initial state: " + state);
-			//System.out.println("Abstract variable state: " + findAbsState(state));
+//			State state = modelGen.getInitialState();
+//			System.out.println("Initial state: " + state);
+//			System.out.println("Abstract variable state: " + findAbsState(state));
 			
 			// Examine successor states
-			//modelGen.exploreState(state);
-			//int numTransitions = modelGen.getNumTransitions(0);
-			//for (int i = 0; i < numTransitions; i++) {
-				//state = modelGen.computeTransitionTarget(0, i);
-				//System.out.println("Successor state: " + state);
-				//System.out.println("Abstract variable state: " + findAbsState(state));
-			//}
+//			modelGen.exploreState(state);
+//			int numTransitions = modelGen.getNumTransitions(0);
+//			for (int i = 0; i < numTransitions; i++) {
+//				state = modelGen.computeTransitionTarget(0, i);
+//				System.out.println("Successor state: " + state);
+//				System.out.println("Abstract variable state: " + findAbsState(state));
+//			}
 			
 			// Construct abstract model and print
 			System.out.println("\nConstructing ADTMC model...");
@@ -328,32 +490,30 @@ public class AbstractionTest
 				}
 			}
 			
+			// Export model information (for debugging purposes only)
+//			System.out.println(model);
+//			model.exportToPrismExplicitTra(args[1]);
+//			exportTargetSet(args[2]);
+//			model.exportToDotFile(args[3], targetsBit);
+//			System.out.println("...done\n");
+			
 			IDTMCModelChecker mc = new IDTMCModelChecker(prism);
 
-			// Compute probabilistic reachability 
-			System.out.println("\nComputing probabilistic reachability...");
-			
-			resetTimer();
-			ModelCheckerResult mcResMin = mc.computeReachProbs(model, targetsBit, MinMax.min());
-			double timeMin = computeTime();
-
-			resetTimer();
-			ModelCheckerResult mcResMax = mc.computeReachProbs(model, targetsBit, MinMax.max());
-			double timeMax = computeTime();
-
-			System.out.println("\nProbability of reaching target set:\nMinimum: " + mcResMin.soln[0] + "\t(" + timeMin + "s)\nMaximum: " + mcResMax.soln[0] + "\t(" + timeMax + "s)");
-			
-			System.out.print("\nComputing (minimal) bounded reachability...");
+			System.out.print("\nComputing minimal bounded reachability...\n");
 			for (int i = 1; i <= 20; i++) {
 				resetTimer();
 				ModelCheckerResult mcRes = mc.computeBoundedReachProbs(model, targetsBit, 4*i, MinMax.min());
 				double roundTime = computeTime();
-				System.out.println("\nRound " + i + " (" + 4*i + " steps): " + mcRes.soln[0] + "\t(" + roundTime + "s)");
+				System.out.println("Round " + i + " (" + ROUND_NUMBER*i + " steps): " + mcRes.soln[0] + "\t(" + roundTime + "s)");
 			}
 			
-			// For debugging purposes only
-			//model.exportToPrismExplicitTra(args[1]);
-			model.exportToDotFile(args[1], targetsBit);
+			System.out.print("\nComputing maximal bounded reachability...\n");
+			for (int i = 1; i <= 20; i++) {
+				resetTimer();
+				ModelCheckerResult mcRes = mc.computeBoundedReachProbs(model, targetsBit, 4*i, MinMax.max());
+				double roundTime = computeTime();
+				System.out.println("Round " + i + " (" + ROUND_NUMBER*i + " steps): " + mcRes.soln[0] + "\t(" + roundTime + "s)");
+			}
 		
 			// Close down PRISM
 			prism.closeDown();
@@ -367,7 +527,7 @@ public class AbstractionTest
 		}
 	}
 	
-	public static void main(String[] args)
+	public static void main(String[] args) throws IOException
 	{
 		new AbstractionTest().run(args);
 	}
